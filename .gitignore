@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+venvv/
+env/
+
+# Local IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / runtime
+*.log
+*.tmp
+
+# Local firmware/build artifacts
+*.bin
+*.elf
+*.hex

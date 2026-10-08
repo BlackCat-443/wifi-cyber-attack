@@ -11,6 +11,7 @@ import subprocess
 from datetime import datetime
 
 from flask import Flask, render_template, jsonify, request
+from werkzeug.utils import secure_filename
 from flask_socketio import SocketIO, emit
 
 # Core modules
@@ -22,6 +23,7 @@ from core.dns_monitor import DNSMonitor
 from core.dhcp_monitor import DHCPMonitor
 from core.port_scanner import PortScanMonitor
 from core.mitigator import run_mitigation, get_mitigation_preview
+from core.esp_usb import esp_usb_manager
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -35,7 +37,7 @@ arp_monitor = ARPMonitor(alert_manager)
 deauth_monitor = DeauthMonitor(alert_manager)
 dns_monitor = DNSMonitor(alert_manager)
 dhcp_monitor = DHCPMonitor(alert_manager)
-port_monitor = PortScanMonitor(alert_manager)
+port_scan_monitor = PortScanMonitor(alert_manager)
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
 start_time = datetime.now()
@@ -61,25 +63,26 @@ scanner.on_update = on_devices_update
 
 # ─── Background Tasks ─────────────────────────────────────────────────────────
 def start_monitors():
-    """Start all monitoring modules"""
-    network, iface = scanner.network, scanner.iface
-
-    # Start scanner first
+    """Start all monitoring modules."""
+    # Start scanner first so network/interface detection is initialized before
+    # packet monitors are attached to an interface.
     scanner.start()
     time.sleep(3)  # Wait for initial scan
+    network, iface = scanner.network, scanner.iface
 
     # Seed ARP table with known devices
     devices = scanner.get_devices()
     arp_monitor.seed_table(devices)
 
-    # Start monitors
+    # Start all network detectors. Individual monitors gracefully disable
+    # themselves when Scapy / packet capture is unavailable.
     arp_monitor.start(iface)
     deauth_monitor.start(iface)
     dns_monitor.start(iface)
     dhcp_monitor.start(iface)
-    port_monitor.start(iface)
+    port_scan_monitor.start(iface)
 
-    print(f"[App] All monitors started | Interface: {iface}")
+    print(f"[App] Monitors started | Interface: {iface}")
 
 
 def auto_scan_loop():
@@ -112,7 +115,7 @@ def get_stats_data():
             "deauth": deauth_monitor.attack_count,
             "dns": dns_monitor.attack_count,
             "dhcp": dhcp_monitor.attack_count,
-            "port": port_monitor.attack_count,
+            "port": port_scan_monitor.attack_count,
         }
     }
 
@@ -143,6 +146,49 @@ def api_devices():
     """
     devices = scanner.get_devices()
     return jsonify({"devices": devices, "count": len(devices)})
+
+
+@app.route('/api/device/<ip>/scan_ports', methods=['POST'])
+def api_scan_device_ports(ip):
+    """
+    POST /api/device/<ip>/scan_ports
+    Scan port umum pada device tertentu.
+
+    Returns JSON:
+        ip: IP device
+        ports: list port terbuka [{port, service, status}]
+        scan_time: waktu scan
+        duration: durasi scan (detik)
+        total_scanned: jumlah port yang di-scan
+        open_count: jumlah port terbuka
+    """
+    from core.device_port_scanner import device_port_scanner
+    
+    # Scan port umum
+    result = device_port_scanner.scan_common_ports(ip)
+    
+    # Update device dengan hasil scan
+    scanner.update_device_ports(ip, result['ports'])
+    
+    return jsonify(result)
+
+
+@app.route('/api/device/<ip>/ports', methods=['GET'])
+def api_get_device_ports(ip):
+    """
+    GET /api/device/<ip>/ports
+    Get hasil scan port terakhir untuk device.
+
+    Returns JSON:
+        ip: IP device
+        ports: list port terbuka
+        scan_time: waktu scan terakhir
+    """
+    from core.device_port_scanner import device_port_scanner
+    result = device_port_scanner.get_scan_result(ip)
+    if result:
+        return jsonify(result)
+    return jsonify({"ip": ip, "ports": [], "scan_time": None, "message": "No scan result available"})
 
 
 @app.route('/api/alerts')
@@ -196,9 +242,10 @@ def api_stats():
 
 @app.route('/api/scan', methods=['POST'])
 def api_scan():
-    """Trigger manual network scan"""
-    scanner.force_scan()
-    return jsonify({"status": "scan_started", "message": "Network scan initiated"})
+    """Trigger manual network scan without stacking concurrent scans."""
+    if scanner.force_scan():
+        return jsonify({"status": "scan_started", "message": "Network scan initiated"})
+    return jsonify({"status": "scan_unavailable", "message": "Scanner belum siap atau scan sedang berjalan."}), 409
 
 
 @app.route('/api/alerts/clear', methods=['POST'])
@@ -271,6 +318,24 @@ def api_mitigate(alert_id):
 
 # Simpan status ESP yang terhubung: {esp_id: {last_seen, ip, data}}
 esp_devices = {}
+ESP_OFFLINE_AFTER = 30
+
+def get_esp_status_snapshot():
+    """Return network ESP devices with a derived online/offline state."""
+    now = datetime.now()
+    snapshot = []
+    for esp in esp_devices.values():
+        item = dict(esp)
+        try:
+            seen = datetime.strptime(item.get("last_seen", ""), "%Y-%m-%d %H:%M:%S")
+            age = max(0, int((now - seen).total_seconds()))
+        except Exception:
+            age = ESP_OFFLINE_AFTER + 1
+        item["last_seen_seconds"] = age
+        item["status"] = "online" if age <= ESP_OFFLINE_AFTER else "offline"
+        snapshot.append(item)
+    return sorted(snapshot, key=lambda x: (x.get("status") != "online", x.get("esp_id", "")))
+
 
 @app.route('/api/esp/report', methods=['POST'])
 def api_esp_report():
@@ -356,7 +421,7 @@ def api_esp_report():
         })
 
     socketio.emit("esp_status_update", {
-        "devices": list(esp_devices.values())
+        "devices": get_esp_status_snapshot()
     })
 
     return jsonify({
@@ -371,10 +436,67 @@ def api_esp_report():
 @app.route('/api/esp/status', methods=['GET'])
 def api_esp_status():
     """Kembalikan daftar ESP8266 yang pernah terhubung"""
+    devices = get_esp_status_snapshot()
     return jsonify({
-        "devices": list(esp_devices.values()),
-        "count":   len(esp_devices),
+        "devices": devices,
+        "count":   len(devices),
     })
+
+
+@app.route('/api/esp/usb', methods=['GET'])
+def api_esp_usb_ports():
+    """List serial/USB devices attached to the host machine."""
+    return jsonify(esp_usb_manager.list_devices())
+
+
+@app.route('/api/esp/usb/flash', methods=['POST'])
+def api_esp_usb_flash():
+    """Compile (when needed) and flash an uploaded ESP8266 .bin/.ino via a selected serial port."""
+    port = (request.form.get("port") or "").strip()
+    address = (request.form.get("address") or "0x0000").strip()
+    baud_raw = request.form.get("baud", "460800")
+    fqbn = (request.form.get("fqbn") or "esp8266:esp8266:nodemcuv2").strip()
+    firmware = request.files.get("firmware")
+
+    if not port:
+        return jsonify({"success": False, "message": "Pilih COM/serial port ESP terlebih dahulu."}), 400
+    if not firmware or not firmware.filename:
+        return jsonify({"success": False, "message": "Pilih file firmware .bin atau .ino terlebih dahulu."}), 400
+
+    filename = secure_filename(firmware.filename)
+    suffix = os.path.splitext(filename)[1].lower()
+    if suffix not in {".bin", ".ino"}:
+        return jsonify({"success": False, "message": "Hanya file .bin atau .ino yang didukung."}), 400
+
+    try:
+        baud = int(baud_raw)
+        if baud not in {115200, 230400, 460800, 921600}:
+            raise ValueError
+    except ValueError:
+        return jsonify({"success": False, "message": "Baud rate tidak valid."}), 400
+
+    temp_path = None
+    try:
+        import tempfile
+        with tempfile.NamedTemporaryFile(prefix="wifi_monitor_", suffix=suffix, delete=False) as tmp:
+            temp_path = tmp.name
+            firmware.save(tmp)
+
+        result = esp_usb_manager.flash(
+            port,
+            temp_path,
+            original_name=filename,
+            baud=baud,
+            address=address,
+            fqbn=fqbn,
+        )
+        return jsonify(result), (200 if result.get("success") else 422)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 @app.route('/api/esp/<esp_id>/scan', methods=['GET'])
@@ -585,30 +707,6 @@ def api_simulate(attack_type):
             "source_ip": src_ip, "attack_type": "ARP Spoofing / MITM"
         }),
         "deauth": lambda: deauth_monitor.simulate_attack(src_ip),
-        "dns": lambda: alert_manager.add_alert({
-            "type": "DNS_SPOOFING", "severity": "HIGH",
-            "title": "🔴 DNS Spoofing Detected!",
-            "message": f"google.com resolved to 10.0.0.1 by {src_ip} but trusted DNS says 142.250.80.46",
-            "source_ip": src_ip, "attack_type": "DNS Cache Poisoning"
-        }),
-        "dhcp": lambda: alert_manager.add_alert({
-            "type": "DHCP_STARVATION", "severity": "HIGH",
-            "title": "💥 DHCP Starvation Attack!",
-            "message": f"Device {src_ip} sent 50 DHCP requests in 30s. IP pool exhaustion!",
-            "source_ip": src_ip, "attack_type": "DHCP Starvation"
-        }),
-        "portscan": lambda: alert_manager.add_alert({
-            "type": "PORT_SCAN", "severity": "MEDIUM",
-            "title": "🔍 Port Scan Detected!",
-            "message": f"Device {src_ip} scanned 45 ports on 192.168.1.1 in 10s. Reconnaissance!",
-            "source_ip": src_ip, "attack_type": "TCP SYN Scan"
-        }),
-        "synflood": lambda: alert_manager.add_alert({
-            "type": "SYN_FLOOD", "severity": "HIGH",
-            "title": "💥 SYN Flood Attack!",
-            "message": f"Device {src_ip} sent 500 SYN packets in 10s. DoS attack!",
-            "source_ip": src_ip, "attack_type": "SYN Flood / DoS"
-        }),
     }
 
     if attack_type in simulations:
@@ -661,8 +759,10 @@ def on_request_scan():
     Event: client requests a manual network scan.
     Runs force_scan() in background and notifies client that scan started.
     """
-    scanner.force_scan()
-    emit('scan_started', {"message": "Scanning network..."})
+    if scanner.force_scan():
+        emit('scan_started', {"message": "Scanning network..."})
+    else:
+        emit('scan_started', {"message": "Scanner belum siap atau scan sedang berjalan."})
 
 
 @socketio.on('request_stats')
@@ -680,7 +780,7 @@ def on_request_stats():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 9002))
+    port = int(os.environ.get("PORT", 9005))
     host = os.environ.get("HOST", "0.0.0.0")
 
     print("""

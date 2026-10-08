@@ -57,16 +57,16 @@ install_deps() {
     debian)
       sudo apt update -y
       sudo apt install -y python3 python3-pip python3-venv nmap net-tools \
-        iproute2 libpcap-dev tcpdump wireless-tools aircrack-ng 2>/dev/null || true
+        iproute2 libpcap-dev tcpdump wireless-tools aircrack-ng usbutils 2>/dev/null || true
       ;;
     arch)
-      sudo pacman -Sy --noconfirm python python-pip nmap net-tools iproute2 libpcap
+      sudo pacman -Sy --noconfirm python python-pip nmap net-tools iproute2 libpcap usbutils
       ;;
     redhat)
-      sudo yum install -y python3 python3-pip nmap net-tools iproute libpcap-devel
+      sudo yum install -y python3 python3-pip nmap net-tools iproute libpcap-devel usbutils
       ;;
     *)
-      warn "Please install manually: python3, pip, nmap, libpcap"
+      warn "Please install manually: python3, pip, nmap, libpcap, and a USB-serial driver/toolchain if flashing ESP from USB"
       ;;
   esac
 
@@ -99,15 +99,18 @@ install_python_deps() {
   $PIP install --upgrade pip -q 2>/dev/null
 
   if [ "$ENV" = "termux" ]; then
-    $PIP install flask flask-socketio psutil requests dnspython -q
-    $PIP install scapy -q 2>/dev/null || warn "Scapy install failed (limited in Termux)"
-    $PIP install netifaces -q 2>/dev/null || warn "netifaces install failed"
+    $PIP install -r requirements.txt -q 2>/dev/null || {
+      warn "Some packages failed on Termux; installing the portable subset..."
+      $PIP install flask flask-socketio eventlet psutil requests dnspython pyserial esptool -q
+      $PIP install scapy -q 2>/dev/null || warn "Scapy install failed (limited in Termux)"
+      $PIP install netifaces -q 2>/dev/null || warn "netifaces install failed"
+    }
   else
     # Install from requirements.txt
     if [ -f "requirements.txt" ]; then
       $PIP install -r requirements.txt -q
     else
-      $PIP install flask flask-socketio scapy python-nmap netifaces psutil requests dnspython -q
+      $PIP install flask flask-socketio eventlet scapy python-nmap netifaces psutil requests dnspython pyserial esptool -q
     fi
   fi
 
@@ -137,7 +140,9 @@ VENV_PYTHON="\$DIR/env/bin/python3"
 [ ! -f "\$VENV_PYTHON" ] && VENV_PYTHON="python3"
 
 echo "[INFO] Starting WiFi Monitor (Full Mode)..."
-echo "[INFO] Dashboard: http://localhost:9000"
+echo "[INFO] Dashboard: http://localhost:9002"
+
+echo "[INFO] ESP USB flashing is available in Dashboard → ESP → USB Firmware Center"
 
 if [ "\$EUID" -ne 0 ]; then
   echo "[INFO] Menjalankan dengan sudo (diperlukan untuk packet capture)..."
@@ -157,7 +162,7 @@ VENV_PYTHON="\$DIR/env/bin/python3"
 [ ! -f "\$VENV_PYTHON" ] && VENV_PYTHON="python3"
 
 echo "[INFO] Starting WiFi Monitor (DEMO MODE)..."
-echo "[INFO] Dashboard: http://localhost:9000"
+echo "[INFO] Dashboard: http://localhost:9002"
 DEMO_MODE=1 "\$VENV_PYTHON" "\$DIR/app.py" --demo
 DEMOEOF
 
@@ -167,7 +172,7 @@ DEMOEOF
 # Run WiFi Monitor on Termux (Android)
 DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 echo "[INFO] Starting WiFi Monitor on Termux..."
-echo "[INFO] Dashboard: http://127.0.0.1:9000"
+echo "[INFO] Dashboard: http://127.0.0.1:9002"
 DEMO_MODE=1 python3 "\$DIR/app.py" --demo
 TERMUXEOF
 
@@ -184,6 +189,12 @@ verify_install() {
   else
     error "Core packages missing! Try: pip install flask flask-socketio eventlet"
     return 1
+  fi
+
+  if $PYTHON -c "import serial, esptool" 2>/dev/null; then
+    success "ESP USB flashing tools: OK"
+  else
+    warn "pyserial/esptool not available - USB firmware flashing disabled"
   fi
 
   if $PYTHON -c "import scapy" 2>/dev/null; then
@@ -215,12 +226,16 @@ print_usage() {
   echo "    bash run_termux.sh"
   echo ""
   echo -e "${YELLOW}Access dashboard:${NC}"
-  echo "  Browser: http://localhost:9000"
-  echo "  Mobile:  http://<your-ip>:9000"
+  echo "  Browser: http://localhost:9002"
+  echo "  Mobile:  http://<your-ip>:9002"
   echo ""
   echo -e "${RED}PENTING:${NC} Jangan pakai 'sudo python3 app.py' langsung!"
   echo "         Gunakan: sudo ./env/bin/python3 app.py"
   echo "         Atau:    bash run.sh  (otomatis pakai venv)"
+  echo ""
+  echo -e "${CYAN}ESP USB firmware:${NC}"
+  echo "  Colok ESP8266 ke laptop → buka tab ESP → pilih port → pilih .bin → Flash Firmware"
+  echo "  Browser cukup mengontrol laptop yang menjalankan Flask; USB dideteksi di laptop tersebut."
   echo ""
 }
 

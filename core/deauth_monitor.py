@@ -11,7 +11,7 @@ from collections import defaultdict
 try:
     from scapy.all import sniff, Dot11, Dot11Deauth, Dot11Disas, RadioTap, conf
     SCAPY_AVAILABLE = True
-except ImportError:
+except Exception:
     SCAPY_AVAILABLE = False
 
 

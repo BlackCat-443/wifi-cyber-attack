@@ -25,6 +25,7 @@ Real-time WiFi network security monitor. Detects cyber attacks and shows instant
 | 📊 Dashboard Real-time | Update live via WebSocket, grafik, timeline alert |
 | 📱 Mobile Friendly | UI responsif, bisa dibuka dari HP |
 | 🔌 ESP8266 Sensor | Integrasi sensor lapangan via ESP8266 |
+| 💾 ESP USB Flasher | Deteksi port ESP di laptop + flash firmware `.bin` dari dashboard |
 
 ---
 
@@ -155,7 +156,12 @@ ESP8266 bisa dipasang sebagai sensor lapangan yang mengirim data ke dashboard in
 
 ```
 ESP8266 ──HTTP POST──> /api/esp/report ──> Dashboard
+
+USB flash dari laptop:
+ESP8266 ──USB──> Flask laptop ──esptool──> firmware `.bin`
 ```
+
+Di tab **🔌 ESP**, USB serial dideteksi otomatis. Cukup pilih firmware `.bin` lalu tekan **Auto Detect & Flash**; pilihan port manual tetap tersedia bila diperlukan. Saat mode Auto aktif, esptool akan mencari port serial yang tersambung dan mencoba menemukan chip ESP8266. Bila dashboard dibuka dari HP, USB yang ditampilkan tetap milik laptop yang menjalankan Flask.
 
 Lihat dokumentasi lengkap di: [`esp8266/README.md`](esp8266/README.md)
 

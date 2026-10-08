@@ -24,7 +24,7 @@
 const char* WIFI_SSID     = "NamaWiFiKamu";
 const char* WIFI_PASSWORD = "PasswordWiFiKamu";
 const char* SERVER_IP     = "192.168.100.66";  // IP laptop yang jalanin Flask
-const int   SERVER_PORT   = 9001;
+const int   SERVER_PORT   = 9002;
 const char* ESP_ID        = "esp-sensor-01";
 const int   ESP_WEB_PORT  = 80;                // Port web server di ESP
 
@@ -386,6 +386,12 @@ void scanWifiNetworks() {
 
 // ─── Tangkap deauth frame ─────────────────────────────────────────────────────
 void captureDeauthFrames(unsigned long ms) {
+  // Simpan kredensial aktif sebelum disconnect. Pada ESP8266, membaca
+  // WiFi.SSID()/WiFi.psk() setelah disconnect tidak selalu mengembalikan
+  // credential yang sedang dipakai sehingga reconnect bisa gagal.
+  String activeSsid = WiFi.SSID();
+  String activePassword = WiFi.psk();
+
   WiFi.disconnect();
   delay(30);
 
@@ -401,7 +407,12 @@ void captureDeauthFrames(unsigned long ms) {
 
   wifi_promiscuous_enable(0);
   delay(30);
-  connectWiFi(WiFi.SSID().c_str(), WiFi.psk().c_str());
+
+  if (activeSsid.length() > 0) {
+    connectWiFi(activeSsid.c_str(), activePassword.c_str());
+  } else {
+    Serial.println("[Deauth] SSID aktif tidak tersedia, melewati reconnect.");
+  }
 }
 
 
