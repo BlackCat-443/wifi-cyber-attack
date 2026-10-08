@@ -12,13 +12,16 @@ from datetime import datetime
 try:
     from scapy.all import ARP, Ether, srp, conf
     SCAPY_AVAILABLE = True
-except ImportError:
+except Exception:
+    # Scapy can fail during interface discovery when the process has no
+    # packet-capture permission. The web dashboard and demo mode must still
+    # start, using the ping/route fallbacks below.
     SCAPY_AVAILABLE = False
 
 try:
     import netifaces
     NETIFACES_AVAILABLE = True
-except ImportError:
+except Exception:
     NETIFACES_AVAILABLE = False
 
 
@@ -830,6 +833,7 @@ class NetworkScanner:
         self.scan_interval = 30     # Detik antar scan otomatis
         self._lock = threading.Lock()
         self.on_update = None       # Callback dipanggil setelah setiap scan selesai
+        self._scan_lock = threading.Lock()
 
     def start(self):
         """
@@ -864,57 +868,47 @@ class NetworkScanner:
             time.sleep(self.scan_interval)
 
     def _do_scan(self):
-        """
-        Lakukan satu siklus scan ARP ke seluruh subnet.
+        """Perform one ARP scan cycle without allowing concurrent scans."""
+        if not self.network:
+            return
 
-        Proses:
-        1. Tandai semua perangkat yang dikenal sebagai "offline"
-        2. Kirim ARP broadcast, kumpulkan respons
-        3. Update state perangkat — yang merespons jadi "online"
-        4. Pertahankan threat_level dan open_ports dari scan sebelumnya
-        5. Panggil on_update callback dengan daftar terbaru
+        if not self._scan_lock.acquire(blocking=False):
+            print("[Scanner] Scan already running; request skipped")
+            return
 
-        ---
-        Perform one ARP scan cycle across the entire subnet.
+        try:
+            print(f"[Scanner] Scanning {self.network}...")
+            new_devices = scan_network_arp(self.network, self.iface)
 
-        Process:
-        1. Mark all known devices as "offline"
-        2. Send ARP broadcast, collect responses
-        3. Update device state — responders become "online"
-        4. Preserve threat_level and open_ports from previous scan
-        5. Call on_update callback with updated device list
-        """
-        print(f"[Scanner] Scanning {self.network}...")
-        new_devices = scan_network_arp(self.network, self.iface)
+            with self._lock:
+                # Mark known devices offline first; responders below become online.
+                for ip in self.devices:
+                    self.devices[ip]["status"] = "offline"
 
-        with self._lock:
-            # Tandai semua offline dulu, nanti yang aktif akan di-update
-            for ip in self.devices:
-                self.devices[ip]["status"] = "offline"
-
-            for dev in new_devices:
-                ip = dev["ip"]
-                if ip in self.devices:
-                    # Pertahankan data yang tidak berubah antar scan
-                    dev["threat_level"] = self.devices[ip].get("threat_level", "safe")
-                    dev["open_ports"]   = self.devices[ip].get("open_ports", [])
-                self.devices[ip] = dev
-
-        print(f"[Scanner] Found {len(new_devices)} devices")
-
-        if self.on_update:
-            self.on_update(self.get_devices())
-
-        # Resolve hostname lengkap di background untuk setiap device baru
-        # Hasilnya akan update cache dan push update ke client saat scan berikutnya
-        for dev in new_devices:
-            def _push_hostname(ip, hostname):
-                with self._lock:
+                for dev in new_devices:
+                    ip = dev["ip"]
                     if ip in self.devices:
-                        self.devices[ip]["hostname"] = hostname
-                if self.on_update:
-                    self.on_update(self.get_devices())
-            resolve_hostname_async(dev["ip"], on_done=_push_hostname)
+                        dev["threat_level"] = self.devices[ip].get("threat_level", "safe")
+                        dev["open_ports"] = self.devices[ip].get("open_ports", [])
+                    self.devices[ip] = dev
+
+            print(f"[Scanner] Found {len(new_devices)} devices")
+
+            if self.on_update:
+                self.on_update(self.get_devices())
+
+            # Resolve hostnames asynchronously so the main scan stays responsive.
+            for dev in new_devices:
+                def _push_hostname(ip, hostname):
+                    with self._lock:
+                        if ip in self.devices:
+                            self.devices[ip]["hostname"] = hostname
+                    if self.on_update:
+                        self.on_update(self.get_devices())
+
+                resolve_hostname_async(dev["ip"], on_done=_push_hostname)
+        finally:
+            self._scan_lock.release()
 
     def get_devices(self):
         """
@@ -953,6 +947,28 @@ class NetworkScanner:
             if ip in self.devices:
                 self.devices[ip]["threat_level"] = level
 
+    def update_device_ports(self, ip, ports):
+        """
+        Update daftar port terbuka untuk device tertentu.
+        Dipanggil setelah scan port selesai.
+
+        Args:
+            ip: IP device
+            ports: List port terbuka [{port, service, status}]
+
+        ---
+        Update open ports list for a specific device.
+        Called after port scan completes.
+
+        Args:
+            ip: device IP address
+            ports: List of open ports [{port, service, status}]
+        """
+        with self._lock:
+            if ip in self.devices:
+                self.devices[ip]["open_ports"] = ports
+                self.devices[ip]["last_port_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     def force_scan(self):
         """
         Paksa scan langsung tanpa menunggu interval berikutnya.
@@ -962,5 +978,10 @@ class NetworkScanner:
         Force an immediate scan without waiting for the next interval.
         Runs in a separate thread to avoid blocking HTTP requests.
         """
+        if not self.network:
+            return False
+        if self._scan_lock.locked():
+            return False
         thread = threading.Thread(target=self._do_scan, daemon=True)
         thread.start()
+        return True

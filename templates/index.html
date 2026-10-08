@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WiFi Cyber Attack Monitor</title>
+  <title>NEON//NET Security Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
@@ -31,8 +31,8 @@
         <span class="text-white text-sm font-bold">W</span>
       </div>
       <div class="hidden sm:block">
-        <h1 class="text-white font-semibold text-sm">WiFi Attack Monitor</h1>
-        <p class="text-gray-400 text-xs">Real-time Network Security</p>
+        <h1 class="text-white font-semibold text-sm tracking-wide">NEON//NET Console</h1>
+        <p class="text-gray-400 text-xs font-mono">defensive network telemetry</p>
       </div>
     </div>
 
@@ -148,10 +148,6 @@
           <button onclick="openArpSpoofModal()"   class="sim-btn bg-red-900/20 border-red-800/50 text-red-300 hover:bg-red-900/40">⚠️ ARP Spoof (Target)</button>
           <button onclick="simulate('arp')"      class="sim-btn">⚠️ ARP Spoofing (Random)</button>
           <button onclick="simulate('deauth')"   class="sim-btn">🚫 Deauth Attack</button>
-          <button onclick="simulate('dns')"      class="sim-btn">🔴 DNS Spoofing</button>
-          <button onclick="simulate('dhcp')"     class="sim-btn">💥 DHCP Starvation</button>
-          <button onclick="simulate('portscan')" class="sim-btn">🔍 Port Scan</button>
-          <button onclick="simulate('synflood')" class="sim-btn">💥 SYN Flood</button>
         </div>
       </div>
     </aside>
@@ -170,6 +166,42 @@
         </button>
         <button onclick="switchTab('chart')"   id="tab-chart"   class="tab-btn px-3 py-2 rounded-lg text-xs sm:text-sm font-medium transition whitespace-nowrap flex-1 sm:flex-none">Analytics</button>
       </div>
+
+      <!-- ── Dashboard Overview ── -->
+      <section class="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <div class="overview-card">
+          <div class="overview-icon cyan">⌁</div>
+          <div class="min-w-0">
+            <p class="overview-label">Network Devices</p>
+            <p id="hero-devices" class="overview-value">0</p>
+            <p id="hero-online" class="overview-meta">0 online</p>
+          </div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-icon red">!</div>
+          <div class="min-w-0">
+            <p class="overview-label">Active Threats</p>
+            <p id="hero-threats" class="overview-value">0</p>
+            <p id="hero-threat-meta" class="overview-meta">No active threat</p>
+          </div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-icon purple">⌘</div>
+          <div class="min-w-0">
+            <p class="overview-label">ESP Sensors</p>
+            <p id="hero-esp" class="overview-value">0</p>
+            <p id="hero-esp-meta" class="overview-meta">USB + network</p>
+          </div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-icon green">◷</div>
+          <div class="min-w-0">
+            <p class="overview-label">System Uptime</p>
+            <p id="hero-uptime" class="overview-value overview-value-mono">00:00:00</p>
+            <p id="hero-connection" class="overview-meta">Dashboard ready</p>
+          </div>
+        </div>
+      </section>
 
       <!-- ── Devices Tab ── -->
       <div id="panel-devices" class="tab-panel">
@@ -203,6 +235,7 @@
                 <th class="text-left px-4 py-3">MAC Address</th>
                 <th class="text-left px-4 py-3">Hostname</th>
                 <th class="text-left px-4 py-3">Vendor</th>
+                <th class="text-left px-4 py-3">Open Ports</th>
                 <th class="text-left px-4 py-3">Threat</th>
                 <th class="text-left px-4 py-3">Last Seen</th>
                 <th class="text-left px-4 py-3">Action</th>
@@ -210,7 +243,7 @@
             </thead>
             <tbody id="device-table-body">
               <tr>
-                <td colspan="7" class="text-center py-8 text-gray-500">
+                <td colspan="9" class="text-center py-8 text-gray-500">
                   <div class="flex flex-col items-center gap-2">
                     <div class="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
                     <span>Scanning network...</span>
@@ -256,29 +289,124 @@
       </div>
 
       <!-- ── ESP Sensors Tab ── -->
-      <div id="panel-esp" class="tab-panel hidden">
-        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h2 class="text-white font-semibold text-sm sm:text-base">🔌 ESP8266 Sensors</h2>
-          <button onclick="refreshEspList()" class="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white text-xs rounded-lg transition">
-            🔄 Refresh
-          </button>
-        </div>
-
-        <!-- Daftar ESP yang terhubung -->
-        <div id="esp-list" class="space-y-3 mb-4">
-          <div class="text-center py-8 text-gray-500 text-sm">
-            Belum ada ESP8266 yang terhubung.<br>
-            <span class="text-xs text-gray-600">Flash kode ke ESP dan pastikan server Flask jalan.</span>
+      <div id="panel-esp" class="tab-panel hidden space-y-4">
+        <div class="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <p class="section-kicker">Hardware</p>
+            <h2 class="text-white font-semibold text-base sm:text-lg">ESP8266 Control Center</h2>
+            <p class="text-gray-500 text-xs sm:text-sm mt-1">Detect ESP yang tersambung via USB, flash firmware, atau kelola sensor yang sudah online lewat Wi-Fi.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="esp-usb-status" class="status-chip neutral">USB scan idle</span>
+            <button onclick="refreshEspHardware()" id="esp-hardware-refresh" class="secondary-btn">↻ Refresh</button>
           </div>
         </div>
 
-        <!-- Panel WiFi Scan hasil -->
-        <div id="esp-scan-panel" class="hidden">
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-white text-sm font-semibold">📡 WiFi Networks Ditemukan ESP</h3>
+        <div class="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+          <!-- USB firmware center -->
+          <section class="hardware-card">
+            <div class="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="hardware-dot"></span>
+                  <h3 class="text-white font-semibold text-sm">ESP Flash Console</h3>
+                </div>
+                <p class="text-gray-500 text-xs mt-1">Colok ESP ke komputer yang menjalankan dashboard → tunggu port <code>COMx</code>/serial muncul → pilih port → pilih <code>.bin</code> atau <code>.ino</code> → flash.</p>
+              </div>
+              <span class="text-[10px] uppercase tracking-wider text-gray-500 border border-gray-700 rounded-full px-2 py-1">ESP8266</span>
+            </div>
+
+            <div id="esp-usb-device-list" class="space-y-2 mb-4">
+              <div class="empty-hardware">Mendeteksi USB serial device...</div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="field-label">USB Port</label>
+                <select id="esp-usb-port" class="field-control" onchange="updateFlashButtonState()">
+                  <option value="">— Pilih COM / serial port —</option>
+                </select>
+              </div>
+              <div>
+                <label class="field-label">Baud Rate</label>
+                <select id="esp-flash-baud" class="field-control">
+                  <option value="115200">115200</option>
+                  <option value="230400">230400</option>
+                  <option value="460800" selected>460800</option>
+                  <option value="921600">921600</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+              <div>
+                <label class="field-label">Board Profile (.ino)</label>
+                <select id="esp-board-fqbn" class="field-control">
+                  <option value="esp8266:esp8266:nodemcuv2">NodeMCU 1.0 (ESP-12E)</option>
+                  <option value="esp8266:esp8266:d1_mini">LOLIN/Wemos D1 mini</option>
+                  <option value="esp8266:esp8266:generic">Generic ESP8266</option>
+                </select>
+                <p id="esp-cli-hint" class="field-help">Board profile dipakai saat file .ino dikompile.</p>
+              </div>
+              <div>
+                <label class="field-label">Flash Address</label>
+                <input id="esp-flash-address" class="field-control font-mono" value="0x0000" spellcheck="false" />
+                <p class="field-help">Default <code>0x0000</code> untuk image firmware utama.</p>
+              </div>
+            </div>
+
+            <label for="esp-firmware-file" id="esp-dropzone" class="firmware-dropzone mt-3 block">
+              <input id="esp-firmware-file" type="file" accept=".bin,.ino,application/octet-stream,text/plain" class="hidden" onchange="handleFirmwareFile(this.files[0])" />
+              <div class="text-center pointer-events-none">
+                <div class="text-2xl mb-1">⇧</div>
+                <p id="esp-file-name" class="text-gray-200 text-sm font-medium">Pilih firmware .bin / .ino</p>
+                <p id="esp-file-size" class="text-gray-500 text-xs mt-1">drag & drop juga didukung</p>
+              </div>
+            </label>
+
+            <div id="esp-flash-progress" class="flash-progress hidden mt-3"><span></span></div>
+            <div id="esp-flash-log" class="hidden mt-3 terminal-log"></div>
+
+            <div class="flex gap-2 mt-4">
+              <button onclick="flashEspFirmware()" id="esp-flash-btn" class="primary-btn flex-1" disabled>⚡ Flash Selected Port</button>
+              <button onclick="clearFirmwareSelection()" class="secondary-btn">Clear</button>
+            </div>
+          </section>
+
+          <!-- Wi-Fi sensor center -->
+          <section>
+            <div class="hardware-card h-full">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <p class="section-kicker">Network sensors</p>
+                  <h3 class="text-white font-semibold text-sm">ESP8266 Online</h3>
+                </div>
+                <span id="esp-network-count" class="status-chip cyan">0 online</span>
+              </div>
+              <div id="esp-list" class="space-y-3">
+                <div class="empty-hardware">Belum ada ESP8266 yang mengirim heartbeat via Wi-Fi.</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="hardware-card">
+          <div class="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <p class="section-kicker">Sensor data</p>
+              <h3 class="text-white font-semibold text-sm">Wi-Fi Scan Results</h3>
+            </div>
             <span id="esp-scan-source" class="text-gray-500 text-xs font-mono"></span>
           </div>
-          <div id="esp-wifi-list" class="space-y-2"></div>
+          <div id="esp-scan-panel" class="hidden">
+            <div id="esp-wifi-list" class="space-y-2"></div>
+          </div>
+          <div id="esp-scan-empty" class="empty-hardware">Jalankan scan dari salah satu sensor untuk melihat jaringan di sekitarnya.</div>
+        </div>
+
+        <div class="hardware-note">
+          <span class="text-cyan-400">ⓘ</span>
+          <p>Deteksi USB dilakukan di mesin yang menjalankan Flask. Jadi saat dashboard dibuka dari HP, yang terlihat tetap USB ESP yang terpasang di laptop/server tersebut.</p>
         </div>
       </div>
 
@@ -543,6 +671,42 @@
           class="flex-1 px-4 py-2.5 bg-red-700 hover:bg-red-600 rounded-xl text-sm text-white font-medium transition flex items-center justify-center gap-2">
           <span>⚠️ Launch ARP Spoof</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ── Port Scan Result Modal ── -->
+  <div id="port-scan-modal" class="hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closePortScanModal()"></div>
+    <div class="relative bg-gray-900 border border-cyan-800/50 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between p-4 sm:p-5 border-b border-gray-800">
+        <div>
+          <p class="section-kicker">Network inspection</p>
+          <h2 class="text-white font-semibold text-sm sm:text-base">Port Scan Result</h2>
+          <p id="port-scan-subtitle" class="text-cyan-400 text-xs mt-0.5 font-mono">—</p>
+        </div>
+        <button onclick="closePortScanModal()" class="text-gray-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <div class="p-4 sm:p-5">
+        <div id="port-scan-loading" class="hidden text-center py-8">
+          <div class="w-9 h-9 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+          <p class="text-gray-300 text-sm">Scanning target...</p>
+          <p class="text-gray-500 text-xs mt-1">Memeriksa port umum pada device.</p>
+        </div>
+        <div id="port-scan-error" class="hidden"></div>
+        <div id="port-scan-results" class="hidden">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-gray-400 text-xs">Open ports</span>
+            <span id="port-scan-count" class="text-cyan-400 text-xs font-mono">0</span>
+          </div>
+          <div id="port-scan-list" class="space-y-2"></div>
+          <div id="port-scan-empty" class="hidden empty-hardware mt-2">Tidak ada port terbuka yang ditemukan.</div>
+        </div>
+      </div>
+      <div class="flex gap-2 p-4 sm:p-5 border-t border-gray-800">
+        <button onclick="closePortScanModal()" class="secondary-btn flex-1">Close</button>
+        <button onclick="rescanPorts()" id="port-rescan-btn" class="primary-btn flex-1">↻ Re-scan</button>
       </div>
     </div>
   </div>

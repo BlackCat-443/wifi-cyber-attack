@@ -6,7 +6,7 @@
  *
  * Fitur utama:
  * - Koneksi WebSocket ke server Flask via Socket.IO
- * - Auto-scan perangkat jaringan setiap 5 detik (2 detik saat serangan aktif)
+ * - Auto-refresh snapshot perangkat setiap 5 detik (2 detik saat serangan aktif)
  * - Render tabel perangkat (desktop) dan kartu (mobile) secara dinamis
  * - Tampilkan alert keamanan dengan filter severity
  * - Modal mitigasi serangan dengan preview command
@@ -27,7 +27,7 @@
  *
  * Main features:
  * - WebSocket connection to Flask server via Socket.IO
- * - Auto-scan network devices every 5s (2s during active attacks)
+ * - Auto-refresh cached network devices every 5s (2s during active attacks)
  * - Dynamically render device table (desktop) and cards (mobile)
  * - Display security alerts with severity filtering
  * - Attack mitigation modal with command preview
@@ -84,13 +84,14 @@ document.addEventListener('DOMContentLoaded', () => {
   startScanCountdown(5);
   document.getElementById('scan-indicator').classList.remove('hidden');
   document.getElementById('scan-indicator').classList.add('flex');
+  initFirmwareDropzone();
+  refreshEspHardware(false);
 });
 
 // ── Auto-Scan ──────────────────────────────────────────────────────────────
 /**
- * Mulai interval auto-scan perangkat jaringan.
- * Kalau WebSocket tersambung, pakai emit 'request_scan'.
- * Kalau tidak, fallback ke fetch /api/devices langsung.
+ * Mulai interval refresh snapshot perangkat jaringan. Scan jaringan sungguhan
+ * hanya dijalankan lewat tombol Scan/manual request agar tidak terjadi overlap.
  *
  * @param {number} interval - Interval dalam milidetik (5000 normal, 2000 attack mode)
  *
@@ -103,15 +104,14 @@ document.addEventListener('DOMContentLoaded', () => {
  */
 function startAutoScan(interval) {
   clearInterval(autoScanInterval);
-  autoScanInterval = setInterval(() => {
-    if (socket && socket.connected) {
-      socket.emit('request_scan');
-    } else {
-      fetch('/api/devices').then(r => r.json()).then(d => {
-        if (d.devices) updateDevices(d.devices);
-      }).catch(() => {});
-    }
-    // Also refresh stats
+  autoScanInterval = setInterval(async () => {
+    // Auto-refresh only reads the latest snapshot. A real network scan is
+    // triggered by the Scan button, so UI refreshes cannot stack ARP scans.
+    try {
+      const res = await fetch('/api/devices', { cache: 'no-store' });
+      const data = await res.json();
+      if (data.devices) updateDevices(data.devices);
+    } catch (_) {}
     refreshStats();
   }, interval);
 }
@@ -313,11 +313,7 @@ function initSocket() {
     if (data.devices) {
       espDevices = data.devices;
       if (currentTab === 'esp') renderEspList();
-      const badge = document.getElementById('tab-esp-count');
-      if (espDevices.length > 0) {
-        badge.classList.remove('hidden');
-        badge.textContent = espDevices.length;
-      }
+      updateEspBadges();
     }
   });
 
@@ -418,7 +414,7 @@ function renderDevices() {
   // Desktop table
   const tbody = document.getElementById('device-table-body');
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-gray-500 text-sm">No devices found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center py-8 text-gray-500 text-sm">No devices found</td></tr>`;
   } else {
     tbody.innerHTML = filtered.map(d => renderDeviceRow(d)).join('');
   }
@@ -453,8 +449,14 @@ function renderDeviceRow(d) {
        </button>`
     : '';
 
-  // Encode device data for ARP spoof modal
-  const devData = encodeURIComponent(JSON.stringify({ ip: d.ip, mac: d.mac, hostname: d.hostname, vendor: d.vendor }));
+  // Format open ports
+  const openPorts = d.open_ports && d.open_ports.length > 0 
+    ? d.open_ports.slice(0, 3).join(', ') + (d.open_ports.length > 3 ? '...' : '')
+    : '-';
+  const portScanBtn = `<button onclick="scanDevicePorts('${d.ip}')"
+    class="px-2 py-1 bg-cyan-700 hover:bg-cyan-600 text-white text-xs rounded-lg transition font-medium whitespace-nowrap">
+    🔍 Scan
+  </button>`;
 
   return `
     <tr>
@@ -469,6 +471,12 @@ function renderDeviceRow(d) {
       <td class="px-4 py-3 text-gray-300 text-xs">${d.hostname || d.ip}</td>
       <td class="px-4 py-3 text-xs">
         <span class="text-gray-300">${d.vendor && d.vendor !== 'Unknown' ? d.vendor : '<span class="text-gray-600">Unknown</span>'}</span>
+      </td>
+      <td class="px-4 py-3 text-xs">
+        <div class="flex items-center gap-1">
+          <span class="text-gray-300 font-mono">${openPorts}</span>
+          ${portScanBtn}
+        </div>
       </td>
       <td class="px-4 py-3 text-xs">
         <span class="${threatClass} font-medium">${threatLabel}</span>
@@ -674,6 +682,25 @@ function updateStats(stats) {
   document.getElementById('stat-unread').textContent  = `${stats.unread_alerts || 0} unread`;
   document.getElementById('stat-uptime').textContent  = stats.uptime || '00:00:00';
 
+  const activeThreats = allAlerts.filter(a => !a.mitigated && ['CRITICAL', 'HIGH'].includes(a.severity)).length;
+  const heroDevices = document.getElementById('hero-devices');
+  const heroOnline = document.getElementById('hero-online');
+  const heroThreats = document.getElementById('hero-threats');
+  const heroThreatMeta = document.getElementById('hero-threat-meta');
+  const heroEsp = document.getElementById('hero-esp');
+  const heroEspMeta = document.getElementById('hero-esp-meta');
+  const heroUptime = document.getElementById('hero-uptime');
+  if (heroDevices) heroDevices.textContent = stats.total_devices || 0;
+  if (heroOnline) heroOnline.textContent = `${stats.online_devices || 0} online`;
+  if (heroThreats) heroThreats.textContent = activeThreats;
+  if (heroThreatMeta) {
+    heroThreatMeta.textContent = activeThreats ? 'Immediate attention required' : 'No active threat';
+    heroThreatMeta.className = activeThreats ? 'overview-meta danger' : 'overview-meta';
+  }
+  if (heroEsp) heroEsp.textContent = (espDevices.length || 0) + (usbEspDevices.filter(d => d.likely_esp8266).length || 0);
+  if (heroEspMeta) heroEspMeta.textContent = `${espDevices.filter(e => e.status !== 'offline').length || 0} online · ${usbEspDevices.filter(d => d.likely_esp8266).length || 0} USB`;
+  if (heroUptime) heroUptime.textContent = stats.uptime || '00:00:00';
+
   const sev = stats.severity_counts || {};
   document.getElementById('sev-critical').textContent = sev.CRITICAL || 0;
   document.getElementById('sev-high').textContent     = sev.HIGH || 0;
@@ -765,7 +792,11 @@ function switchTab(tab) {
     document.getElementById(`tab-${t}`)?.classList.toggle('active', t === tab);
   });
   if (tab === 'chart') updateCharts();
-  if (tab === 'esp')   refreshEspList();
+  if (tab === 'esp') {
+    startUsbPolling();
+  } else {
+    stopUsbPolling();
+  }
   if (tab === 'alerts') {
     fetch('/api/alerts/read-all', { method: 'POST' }).catch(() => {});
     allAlerts.forEach(a => a.read = true);
@@ -1079,199 +1110,404 @@ async function restoreInternet() {
   }
 }
 
-// ── ESP Sensors Tab ───────────────────────────────────────────────────────
+// ── ESP Sensors + USB Firmware ─────────────────────────────────────────────
 
-/** State ESP */
 let espDevices       = [];
-let activeEspId      = null;   // ESP yang sedang dipilih untuk scan/connect
-let wifiConnectData  = null;   // Data WiFi yang mau dikonek {ssid, encryption, rssi, open}
+let activeEspId      = null;
+let wifiConnectData  = null;
+let usbEspDevices    = [];
+let selectedFirmwareFile = null;
+let usbRefreshTimer  = null;
+let espCapabilities  = {};
+let previousUsbPorts = new Set();
 
-/**
- * Refresh daftar ESP dari server dan render ke tab.
- */
-async function refreshEspList() {
+async function refreshEspHardware(showError = true) {
+  const status = document.getElementById('esp-usb-status');
+  if (status) {
+    status.textContent = 'USB scanning…';
+    status.className = 'status-chip neutral';
+  }
+
   try {
-    const res  = await fetch('/api/esp/status');
-    const data = await res.json();
-    espDevices = data.devices || [];
+    const [usbRes, netRes] = await Promise.all([
+      fetch('/api/esp/usb', { cache: 'no-store' }),
+      fetch('/api/esp/status', { cache: 'no-store' })
+    ]);
+    const usbData = await usbRes.json();
+    const netData = await netRes.json();
+
+    usbEspDevices = usbData.devices || [];
+    espCapabilities = usbData.capabilities || {};
+    espDevices = netData.devices || [];
+
+    const currentPorts = new Set(usbEspDevices.map(d => d.port));
+    const newlyAdded = [...currentPorts].filter(port => !previousUsbPorts.has(port));
+    if (previousUsbPorts.size && newlyAdded.length) {
+      showToastMsg('success', 'ESP USB', `Port baru terdeteksi: ${newlyAdded.join(', ')}`);
+    }
+    previousUsbPorts = currentPorts;
+    renderUsbEspDevices();
+    updateEspToolingHint();
     renderEspList();
-    const badge = document.getElementById('tab-esp-count');
-    if (espDevices.length > 0) {
-      badge.classList.remove('hidden');
-      badge.textContent = espDevices.length;
-    } else {
-      badge.classList.add('hidden');
+    updateEspBadges();
+
+    if (status) {
+      const likely = usbEspDevices.filter(d => d.likely_esp8266).length;
+      if (!usbData.available) {
+        status.textContent = 'pyserial belum siap';
+        status.className = 'status-chip warning';
+      } else if (likely) {
+        status.textContent = `${likely} ESP-like USB device`;
+        status.className = 'status-chip success';
+      } else if (usbEspDevices.length) {
+        status.textContent = `${usbEspDevices.length} serial device`;
+        status.className = 'status-chip neutral';
+      } else {
+        status.textContent = 'Tidak ada USB serial';
+        status.className = 'status-chip neutral';
+      }
     }
   } catch (e) {
-    showToastMsg('error', '❌ Error', 'Gagal ambil data ESP');
+    if (status) {
+      status.textContent = 'USB scan error';
+      status.className = 'status-chip danger';
+    }
+    if (showError) showToastMsg('error', 'ESP Hardware', 'Gagal membaca device USB: ' + e.message);
   }
 }
 
-/**
- * Render kartu untuk setiap ESP yang terhubung.
- */
+function startUsbPolling() {
+  clearInterval(usbRefreshTimer);
+  refreshEspHardware(false);
+  usbRefreshTimer = setInterval(() => {
+    if (currentTab === 'esp') refreshEspHardware(false);
+  }, 2500);
+}
+
+function stopUsbPolling() {
+  clearInterval(usbRefreshTimer);
+  usbRefreshTimer = null;
+}
+
+function updateEspBadges() {
+  const online = espDevices.filter(e => e.status !== 'offline').length;
+  const usb = usbEspDevices.filter(d => d.likely_esp8266).length;
+  const badge = document.getElementById('tab-esp-count');
+  const networkCount = document.getElementById('esp-network-count');
+  if (badge) {
+    const count = online + usb;
+    badge.textContent = count;
+    badge.classList.toggle('hidden', count === 0);
+  }
+  if (networkCount) networkCount.textContent = `${online} online`;
+}
+
+async function refreshEspList() {
+  await refreshEspHardware(true);
+}
+
+function renderUsbEspDevices() {
+  const list = document.getElementById('esp-usb-device-list');
+  const select = document.getElementById('esp-usb-port');
+  if (!list || !select) return;
+
+  const current = select.value;
+  select.innerHTML = '<option value="">— Pilih COM / serial port —</option>';
+
+  if (!usbEspDevices.length) {
+    list.innerHTML = '<div class="empty-hardware">Belum ada USB serial device. Colok ESP lalu tunggu beberapa detik.</div>';
+    return;
+  }
+
+  usbEspDevices.forEach((device) => {
+    const opt = document.createElement('option');
+    opt.value = device.port;
+    opt.textContent = `${device.port} — ${device.description || 'Serial device'}`;
+    select.appendChild(opt);
+  });
+
+  if (current && usbEspDevices.some(d => d.port === current)) {
+    select.value = current;
+  }
+  updateFlashButtonState();
+
+  list.innerHTML = usbEspDevices.map((device) => {
+    const label = device.likely_esp8266 ? 'ESP8266 / likely' : 'Serial / generic';
+    const cls = device.likely_esp8266 ? 'hardware-device likely' : 'hardware-device';
+    const vidPid = device.vid != null && device.pid != null ? `${device.vid.toString(16).padStart(4,'0')}:${device.pid.toString(16).padStart(4,'0')}` : 'VID:PID —';
+    return `
+      <button type="button" onclick="selectEspUsbPort(${JSON.stringify(device.port)})" class="${cls} w-full text-left">
+        <span class="hardware-device-icon">${device.likely_esp8266 ? '◆' : '○'}</span>
+        <span class="min-w-0 flex-1">
+          <span class="flex items-center gap-2">
+            <strong class="text-gray-100 font-mono text-xs">${escapeHtml(device.port)}</strong>
+            <span class="hardware-badge">${label}</span>
+          </span>
+          <span class="block text-gray-500 text-[11px] truncate mt-0.5">${escapeHtml(device.description || 'Unknown')} · ${escapeHtml(vidPid)}</span>
+        </span>
+      </button>`;
+  }).join('');
+}
+
+function selectEspUsbPort(port) {
+  const select = document.getElementById('esp-usb-port');
+  if (select) {
+    select.value = port;
+    updateFlashButtonState();
+  }
+}
+
+function initFirmwareDropzone() {
+  const zone = document.getElementById('esp-dropzone');
+  if (!zone) return;
+  ['dragenter', 'dragover'].forEach(type => zone.addEventListener(type, (e) => {
+    e.preventDefault();
+    zone.classList.add('dragging');
+  }));
+  ['dragleave', 'drop'].forEach(type => zone.addEventListener(type, (e) => {
+    e.preventDefault();
+    zone.classList.remove('dragging');
+  }));
+  zone.addEventListener('drop', (e) => handleFirmwareFile(e.dataTransfer?.files?.[0]));
+}
+
+function handleFirmwareFile(file) {
+  selectedFirmwareFile = null;
+  if (!file) { updateFlashButtonState(); return; }
+  const ext = file.name.toLowerCase().split('.').pop();
+  if (!['bin', 'ino'].includes(ext)) {
+    showToastMsg('error', 'Firmware', 'Pilih file .bin atau .ino ESP8266.');
+    updateFlashButtonState();
+    return;
+  }
+  const maxSize = ext === 'ino' ? 2 * 1024 * 1024 : 16 * 1024 * 1024;
+  if (file.size <= 0 || file.size > maxSize) {
+    showToastMsg('error', 'Firmware', `Ukuran file tidak valid (maks. ${ext === 'ino' ? '2 MB' : '16 MB'}).`);
+    updateFlashButtonState();
+    return;
+  }
+  selectedFirmwareFile = file;
+  const name = document.getElementById('esp-file-name');
+  const size = document.getElementById('esp-file-size');
+  if (name) name.textContent = file.name;
+  if (size) size.textContent = `${formatFileSize(file.size)} · ${ext === 'ino' ? 'akan dikompile lalu di-flash' : 'siap di-flash'}`;
+  updateFlashButtonState();
+}
+
+function updateFlashButtonState() {
+  const button = document.getElementById('esp-flash-btn');
+  const port = document.getElementById('esp-usb-port')?.value;
+  if (!button || button.dataset.flashing === '1') return;
+  button.disabled = !selectedFirmwareFile || !port;
+  button.title = !port ? 'Pilih COM/serial port terlebih dahulu' : (!selectedFirmwareFile ? 'Pilih firmware terlebih dahulu' : 'Siap flash');
+}
+
+function clearFirmwareSelection() {
+  selectedFirmwareFile = null;
+  const input = document.getElementById('esp-firmware-file');
+  const name = document.getElementById('esp-file-name');
+  const size = document.getElementById('esp-file-size');
+  const log = document.getElementById('esp-flash-log');
+  if (input) input.value = '';
+  if (name) name.textContent = 'Pilih firmware .bin / .ino';
+  if (size) size.textContent = 'drag & drop juga didukung';
+  if (log) { log.classList.add('hidden'); log.textContent = ''; }
+  updateFlashButtonState();
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function flashEspFirmware() {
+  const port = document.getElementById('esp-usb-port')?.value;
+  const baud = document.getElementById('esp-flash-baud')?.value || '460800';
+  const fqbn = document.getElementById('esp-board-fqbn')?.value || 'esp8266:esp8266:nodemcuv2';
+  const address = document.getElementById('esp-flash-address')?.value.trim() || '0x0000';
+  const button = document.getElementById('esp-flash-btn');
+  const log = document.getElementById('esp-flash-log');
+  const progress = document.getElementById('esp-flash-progress');
+  if (!port) {
+    showToastMsg('error', 'Flash Firmware', 'Pilih COM/serial port ESP terlebih dahulu.');
+    return;
+  }
+  if (!selectedFirmwareFile) {
+    showToastMsg('error', 'Flash Firmware', 'Pilih file firmware .bin atau .ino terlebih dahulu.');
+    return;
+  }
+  if (!/^0x[0-9a-f]+$|^[0-9]+$/i.test(address)) {
+    showToastMsg('error', 'Flash Firmware', 'Alamat flash tidak valid. Contoh 0x0000.');
+    return;
+  }
+
+  const form = new FormData();
+  form.append('port', port || '');
+  form.append('baud', baud);
+  form.append('address', address);
+  form.append('fqbn', fqbn);
+  form.append('firmware', selectedFirmwareFile, selectedFirmwareFile.name);
+
+  button.disabled = true;
+  button.dataset.flashing = '1';
+  button.innerHTML = '<span class="spinner"></span> Compiling / Flashing...';
+  if (progress) progress.classList.remove('hidden');
+  if (log) {
+    log.classList.remove('hidden');
+    const isIno = selectedFirmwareFile.name.toLowerCase().endsWith('.ino');
+    log.textContent = `Port: ${port}\n${isIno ? `Compiling ${selectedFirmwareFile.name} (${fqbn})…` : `Loading ${selectedFirmwareFile.name}…`}\n${isIno ? 'After compile: flashing generated binary…' : 'Starting esptool flash…'}`;
+  }
+
+  try {
+    const res = await fetch('/api/esp/usb/flash', { method: 'POST', body: form });
+    const data = await res.json();
+    if (log) log.textContent = `${data.message || 'Flash finished'}\n\n${data.log || ''}`;
+    if (data.success) {
+      const usedPort = data.port || port;
+      showToastMsg('success', 'ESP8266 Firmware', `${selectedFirmwareFile.name} berhasil di-flash (${usedPort})`);
+      button.innerHTML = '✅ Flash Berhasil';
+      button.dataset.flashing = '0';
+      if (progress) progress.classList.add('hidden');
+      updateFlashButtonState();
+    } else {
+      showToastMsg('error', 'ESP8266 Firmware', data.message || 'Flash gagal');
+      button.innerHTML = '⚡ Flash Selected Port';
+      button.dataset.flashing = '0';
+      if (progress) progress.classList.add('hidden');
+      updateFlashButtonState();
+    }
+  } catch (e) {
+    if (log) log.textContent = `Network error: ${e.message}`;
+    showToastMsg('error', 'ESP8266 Firmware', e.message);
+    button.innerHTML = '⚡ Flash Selected Port';
+    button.dataset.flashing = '0';
+    if (progress) progress.classList.add('hidden');
+    updateFlashButtonState();
+  }
+}
+
+function updateEspToolingHint() {
+  const hint = document.getElementById('esp-cli-hint');
+  if (!hint) return;
+  if (espCapabilities.arduino_cli) {
+    hint.textContent = 'arduino-cli siap: file .ino dapat dikompile otomatis.';
+    hint.className = 'field-help text-green-400';
+  } else {
+    hint.textContent = 'arduino-cli belum tersedia: gunakan .bin atau install Arduino CLI + ESP8266 core.';
+    hint.className = 'field-help text-yellow-400';
+  }
+}
+
 function renderEspList() {
   const container = document.getElementById('esp-list');
+  if (!container) return;
   if (!espDevices.length) {
-    container.innerHTML = `
-      <div class="text-center py-8 text-gray-500 text-sm">
-        Belum ada ESP8266 yang terhubung.<br>
-        <span class="text-xs text-gray-600">Flash kode ke ESP dan pastikan server Flask jalan.</span>
-      </div>`;
+    container.innerHTML = '<div class="empty-hardware">Belum ada ESP8266 yang mengirim heartbeat via Wi-Fi.</div>';
+    updateEspBadges();
     return;
   }
 
   container.innerHTML = espDevices.map(esp => {
-    const rssiBar  = getRssiBar(esp.rssi);
-    const uptime   = formatUptime(esp.uptime || 0);
-    const ssid     = esp.connected_ssid || '—';
-    const lastSeen = esp.last_seen || '—';
-
+    const online = esp.status !== 'offline';
+    const rssiBar = getRssiBar(Number(esp.rssi || 0));
+    const uptime = formatUptime(Number(esp.uptime || 0));
+    const ssid = esp.connected_ssid || '—';
+    const statusText = online ? 'ONLINE' : `OFFLINE · ${esp.last_seen_seconds || '?'}s`;
+    const statusClass = online ? 'success' : 'neutral';
     return `
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-        <!-- Header -->
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]"></span>
-            <span class="text-white font-mono text-sm font-semibold">${esp.esp_id}</span>
+      <div class="sensor-card ${online ? '' : 'offline'}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="sensor-dot ${online ? 'online' : 'offline'}"></span>
+            <div class="min-w-0">
+              <p class="text-white font-mono text-sm font-semibold truncate">${escapeHtml(esp.esp_id || 'esp-unknown')}</p>
+              <p class="text-gray-500 text-[11px] mt-0.5">${escapeHtml(esp.esp_ip || esp.ip || '—')}</p>
+            </div>
           </div>
-          <span class="text-xs text-gray-500 font-mono">${lastSeen}</span>
+          <span class="status-chip ${statusClass}">${statusText}</span>
         </div>
-
-        <!-- Info grid -->
-        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-          <div>
-            <p class="text-gray-500">IP ESP</p>
-            <p class="text-cyan-400 font-mono">${esp.esp_ip || esp.ip}</p>
-          </div>
-          <div>
-            <p class="text-gray-500">WiFi Terhubung</p>
-            <p class="text-green-400 font-mono truncate">${ssid}</p>
-          </div>
-          <div>
-            <p class="text-gray-500">Signal</p>
-            <p class="text-gray-300">${rssiBar} ${esp.rssi || 0} dBm</p>
-          </div>
-          <div>
-            <p class="text-gray-500">Uptime</p>
-            <p class="text-gray-300 font-mono">${uptime}</p>
-          </div>
+        <div class="grid grid-cols-2 gap-3 mt-4 text-xs">
+          <div><p class="text-gray-500">Wi-Fi</p><p class="text-green-400 font-mono truncate">${escapeHtml(ssid)}</p></div>
+          <div><p class="text-gray-500">Signal</p><p class="text-gray-300 font-mono">${rssiBar} ${Number(esp.rssi || 0)} dBm</p></div>
+          <div><p class="text-gray-500">Uptime</p><p class="text-gray-300 font-mono">${uptime}</p></div>
+          <div><p class="text-gray-500">Firmware</p><p class="text-gray-300 font-mono">${escapeHtml(esp.firmware || 'unknown')}</p></div>
         </div>
-
-        <!-- Tombol aksi -->
-        <div class="flex gap-2 pt-1 border-t border-gray-800">
-          <button onclick="espScanWifi('${esp.esp_id}')" id="scan-btn-${esp.esp_id}"
-            class="flex-1 px-3 py-2 bg-cyan-800/50 hover:bg-cyan-700/60 border border-cyan-700/50 text-cyan-300 text-xs rounded-lg transition font-medium">
-            📡 Scan WiFi Sekitar
-          </button>
-          <button onclick="espRefreshStatus('${esp.esp_id}')"
-            class="px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs rounded-lg transition">
-            🔄
-          </button>
+        <div class="flex gap-2 mt-4 pt-3 border-t border-gray-800">
+          <button onclick="espScanWifi(${JSON.stringify(esp.esp_id)})" class="secondary-btn flex-1" ${online ? '' : 'disabled'}>📡 Scan Wi-Fi</button>
+          <button onclick="espRefreshStatus(${JSON.stringify(esp.esp_id)})" class="secondary-btn">↻</button>
         </div>
-      </div>
-    `;
+      </div>`;
   }).join('');
+  updateEspBadges();
 }
 
-/**
- * Perintahkan ESP scan WiFi sekitar.
- * Hasil ditampilkan di panel bawah tab ESP.
- *
- * @param {string} espId - ID ESP yang mau disuruh scan
- */
 async function espScanWifi(espId) {
   activeEspId = espId;
-  const btn = document.getElementById(`scan-btn-${espId}`);
-  if (btn) {
-    btn.innerHTML = '<div class="w-3 h-3 border-2 border-cyan-300 border-t-transparent rounded-full animate-spin inline-block mr-1"></div> Scanning...';
-    btn.disabled = true;
-  }
-
+  const safeId = encodeURIComponent(espId);
   try {
-    const res  = await fetch(`/api/esp/${espId}/scan`);
+    const res = await fetch(`/api/esp/${safeId}/scan`);
     const data = await res.json();
-
-    if (data.error) {
-      showToastMsg('error', '❌ Scan Gagal', data.error);
-      return;
-    }
-
+    if (data.error) throw new Error(data.error);
     renderWifiScanResults(espId, data.networks || []);
-    showToastMsg('success', '📡 Scan Selesai', `${(data.networks||[]).length} jaringan ditemukan`);
+    showToastMsg('success', 'Wi-Fi Scan', `${(data.networks || []).length} jaringan ditemukan`);
   } catch (e) {
-    showToastMsg('error', '❌ Error', 'Gagal scan: ' + e.message);
-  } finally {
-    if (btn) {
-      btn.innerHTML = '📡 Scan WiFi Sekitar';
-      btn.disabled = false;
-    }
+    showToastMsg('error', 'Wi-Fi Scan', e.message);
   }
 }
 
-/**
- * Render daftar WiFi hasil scan ESP ke panel.
- *
- * @param {string} espId    - ID ESP sumber scan
- * @param {Array}  networks - Array jaringan WiFi
- */
 function renderWifiScanResults(espId, networks) {
-  const panel    = document.getElementById('esp-scan-panel');
-  const listEl   = document.getElementById('esp-wifi-list');
+  const panel = document.getElementById('esp-scan-panel');
+  const empty = document.getElementById('esp-scan-empty');
+  const listEl = document.getElementById('esp-wifi-list');
   const sourceEl = document.getElementById('esp-scan-source');
+  if (!panel || !listEl) return;
 
   panel.classList.remove('hidden');
-  sourceEl.textContent = `dari ${espId}`;
+  if (empty) empty.classList.add('hidden');
+  if (sourceEl) sourceEl.textContent = `sensor: ${espId}`;
 
+  networks = [...networks].sort((a, b) => Number(b.rssi || -100) - Number(a.rssi || -100));
   if (!networks.length) {
-    listEl.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">Tidak ada jaringan ditemukan</p>';
+    listEl.innerHTML = '<div class="empty-hardware">Tidak ada jaringan ditemukan.</div>';
     return;
   }
 
-  // Urutkan dari sinyal terkuat
-  networks.sort((a, b) => b.rssi - a.rssi);
-
   listEl.innerHTML = networks.map(net => {
-    const bar      = getRssiBar(net.rssi);
-    const encColor = net.open ? 'text-green-400' : 'text-yellow-400';
-    const encLabel = net.open ? '🔓 Open' : `🔒 ${net.encryption}`;
-    const ssidDisp = net.ssid || '<hidden>';
-
+    const encLabel = net.open ? 'OPEN' : (net.encryption || 'SECURED');
+    const encClass = net.open ? 'text-green-400' : 'text-yellow-400';
+    const data = escapeHtml(JSON.stringify(net));
     return `
-      <div class="bg-gray-900 border border-gray-800 hover:border-cyan-700/50 rounded-xl px-4 py-3
-                  flex items-center justify-between gap-3 cursor-pointer transition group"
-           onclick="openWifiConnectModal('${espId}', ${JSON.stringify(net).replace(/"/g, '&quot;')})">
-        <div class="flex-1 min-w-0">
-          <p class="text-white text-sm font-medium truncate">${ssidDisp}</p>
-          <p class="text-gray-500 text-xs mt-0.5">ch${net.channel} · ${bar} ${net.rssi} dBm</p>
-        </div>
-        <div class="flex items-center gap-3 flex-shrink-0">
-          <span class="${encColor} text-xs font-medium">${encLabel}</span>
-          <span class="text-cyan-500 text-xs opacity-0 group-hover:opacity-100 transition">Konek →</span>
-        </div>
-      </div>
-    `;
+      <button type="button" class="wifi-result-row w-full text-left" data-esp-id="${escapeHtml(espId)}" data-network="${data}" onclick="openWifiConnectFromElement(this)">
+        <span class="min-w-0 flex-1">
+          <span class="block text-gray-100 text-sm font-medium truncate">${escapeHtml(net.ssid || '<hidden>')}</span>
+          <span class="block text-gray-500 text-[11px] mt-0.5">CH ${escapeHtml(net.channel)} · ${getRssiBar(Number(net.rssi || -100))} ${escapeHtml(net.rssi)} dBm</span>
+        </span>
+        <span class="${encClass} text-[11px] font-semibold flex-shrink-0">${encLabel} · Connect →</span>
+      </button>`;
   }).join('');
 }
 
-/**
- * Refresh status satu ESP dari server langsung.
- *
- * @param {string} espId
- */
+function openWifiConnectFromElement(element) {
+  try {
+    const net = JSON.parse(element.dataset.network || '{}');
+    openWifiConnectModal(element.dataset.espId || '', net);
+  } catch (_) {
+    showToastMsg('error', 'Wi-Fi Connect', 'Data jaringan tidak valid. Jalankan scan ulang.');
+  }
+}
+
 async function espRefreshStatus(espId) {
   try {
-    const res  = await fetch(`/api/esp/${espId}/status`);
+    const res = await fetch(`/api/esp/${encodeURIComponent(espId)}/status`);
     const data = await res.json();
-    // Update data di array lokal
+    if (data.error) throw new Error(data.error);
     const idx = espDevices.findIndex(e => e.esp_id === espId);
-    if (idx !== -1 && !data.error) {
-      espDevices[idx] = { ...espDevices[idx], ...data };
-      renderEspList();
-    }
-    showToastMsg('success', '🔄 Updated', `Status ${espId} diperbarui`);
+    if (idx !== -1) espDevices[idx] = { ...espDevices[idx], ...data, status: 'online' };
+    renderEspList();
+    showToastMsg('success', 'ESP Status', `${espId} diperbarui`);
   } catch (e) {
-    showToastMsg('error', '❌ Error', e.message);
+    showToastMsg('error', 'ESP Status', e.message);
   }
 }
 
@@ -1573,3 +1809,88 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// ── Device Port Scan ───────────────────────────────────────────────────────
+let currentPortScanIp = null;
+
+async function scanDevicePorts(ip) {
+  currentPortScanIp = ip;
+  openPortScanModal(ip);
+  setPortScanLoading(true);
+  try {
+    const res = await fetch(`/api/device/${encodeURIComponent(ip)}/scan_ports`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.message || data.error || 'Port scan gagal');
+    renderPortScanResult(data);
+    if (data.open_count > 0) {
+      showToastMsg('success', 'Port Scan', `${data.open_count} open port pada ${ip}`);
+    } else {
+      showToastMsg('info', 'Port Scan', `Tidak ada port terbuka pada ${ip}`);
+    }
+    // Update device table without starting another network scan.
+    const snapshot = await fetch('/api/devices', { cache: 'no-store' }).then(r => r.json());
+    if (snapshot.devices) updateDevices(snapshot.devices);
+  } catch (e) {
+    showPortScanError(e.message);
+    showToastMsg('error', 'Port Scan', e.message);
+  } finally {
+    setPortScanLoading(false);
+  }
+}
+
+function openPortScanModal(ip) {
+  const modal = document.getElementById('port-scan-modal');
+  if (!modal) return;
+  document.getElementById('port-scan-subtitle').textContent = ip;
+  document.getElementById('port-scan-loading').classList.add('hidden');
+  document.getElementById('port-scan-results').classList.add('hidden');
+  document.getElementById('port-scan-error').classList.add('hidden');
+  modal.classList.remove('hidden');
+}
+
+function closePortScanModal() {
+  document.getElementById('port-scan-modal')?.classList.add('hidden');
+}
+
+function setPortScanLoading(active) {
+  const loading = document.getElementById('port-scan-loading');
+  const button = document.getElementById('port-rescan-btn');
+  if (loading) loading.classList.toggle('hidden', !active);
+  if (button) {
+    button.disabled = active;
+    button.innerHTML = active ? '<span class="spinner"></span> Scanning…' : '↻ Re-scan';
+  }
+}
+
+function renderPortScanResult(data) {
+  const results = document.getElementById('port-scan-results');
+  const list = document.getElementById('port-scan-list');
+  const empty = document.getElementById('port-scan-empty');
+  const count = document.getElementById('port-scan-count');
+  const error = document.getElementById('port-scan-error');
+  if (!results || !list || !count) return;
+  error.classList.add('hidden');
+  results.classList.remove('hidden');
+  count.textContent = `${data.open_count || 0} open`;
+  const ports = data.ports || [];
+  list.innerHTML = ports.map(p => `
+    <div class="port-result-row">
+      <span class="font-mono text-cyan-300">:${escapeHtml(p.port)}</span>
+      <span class="text-gray-300">${escapeHtml(p.service || 'unknown')}</span>
+      <span class="text-green-400 text-[11px] font-semibold">OPEN</span>
+    </div>`).join('');
+  empty.classList.toggle('hidden', ports.length !== 0);
+}
+
+function showPortScanError(message) {
+  const error = document.getElementById('port-scan-error');
+  if (!error) return;
+  error.className = 'bg-red-900/20 border border-red-800/40 rounded-xl p-3 text-red-300 text-xs';
+  error.textContent = message || 'Port scan gagal.';
+  error.classList.remove('hidden');
+}
+
+function rescanPorts() {
+  if (currentPortScanIp) scanDevicePorts(currentPortScanIp);
+}
+

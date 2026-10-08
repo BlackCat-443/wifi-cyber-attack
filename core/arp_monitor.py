@@ -10,7 +10,7 @@ from datetime import datetime
 try:
     from scapy.all import sniff, ARP, conf
     SCAPY_AVAILABLE = True
-except ImportError:
+except Exception:
     SCAPY_AVAILABLE = False
 
 
@@ -120,9 +120,38 @@ class ARPMonitor:
         if packet.haslayer(ARP):
             arp = packet[ARP]
 
+            # Gratuitous ARP harus diperiksa lebih dulu karena juga merupakan
+            # ARP reply (op=2). Pada paket gratuitous, sender IP == target IP
+            # atau target IP dapat berupa 0.0.0.0/broadcast bergantung implementasi.
+            is_gratuitous = (
+                arp.op == 2
+                and (
+                    arp.psrc == arp.pdst
+                    or arp.pdst == "0.0.0.0"
+                    or arp.hwdst in {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
+                )
+            )
+
+            if is_gratuitous:
+                self.alert_manager.add_alert({
+                    "type":        "GRATUITOUS_ARP",
+                    "severity":    "MEDIUM",
+                    "title":       "⚠️ Gratuitous ARP Detected",
+                    "message":     f"Suspicious gratuitous ARP from {arp.psrc} ({arp.hwsrc})",
+                    "source_ip":   arp.psrc,
+                    "source_mac":  arp.hwsrc,
+                    "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "attack_type": "Gratuitous ARP"
+                })
+                # Gratuitous ARP yang valid tidak otomatis berarti spoofing.
+                # Tetap simpan mapping-nya agar tabel trusted tetap up to date.
+                with self._lock:
+                    if arp.psrc and arp.hwsrc:
+                        self.arp_table.setdefault(arp.psrc, arp.hwsrc)
+
             # ARP Reply (op=2) — perangkat mengumumkan MAC-nya
-            if arp.op == 2:
-                ip  = arp.psrc
+            elif arp.op == 2:
+                ip = arp.psrc
                 mac = arp.hwsrc
 
                 with self._lock:
@@ -149,19 +178,6 @@ class ARPMonitor:
                     else:
                         # Pertama kali lihat IP ini, simpan sebagai entri terpercaya
                         self.arp_table[ip] = mac
-
-            # Gratuitous ARP — ARP reply yang dikirim ke broadcast (mencurigakan)
-            elif arp.op == 2 and arp.pdst == "0.0.0.0":
-                self.alert_manager.add_alert({
-                    "type":        "GRATUITOUS_ARP",
-                    "severity":    "MEDIUM",
-                    "title":       "⚠️ Gratuitous ARP Detected",
-                    "message":     f"Suspicious gratuitous ARP from {arp.psrc} ({arp.hwsrc})",
-                    "source_ip":   arp.psrc,
-                    "source_mac":  arp.hwsrc,
-                    "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "attack_type": "Gratuitous ARP"
-                })
 
     def get_arp_table(self):
         """

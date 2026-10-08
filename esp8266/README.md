@@ -102,7 +102,7 @@ Buka `wifi_probe.ino`, ubah bagian ini **sebelum** di-flash:
 const char* WIFI_SSID     = "NamaWiFiKamu";       // WiFi awal ESP
 const char* WIFI_PASSWORD = "PasswordWiFiKamu";   // Password WiFi
 const char* SERVER_IP     = "192.168.100.66";     // IP laptop/server Flask
-const int   SERVER_PORT   = 9001;                 // Port Flask
+const int   SERVER_PORT   = 9002;                 // Port Flask
 const char* ESP_ID        = "esp-sensor-01";      // Nama unik ESP ini
 ```
 
@@ -113,6 +113,40 @@ Cara cari IP laptop:
 ---
 
 ## 💻 Cara Flash ke ESP — Windows
+
+### 🚀 Flash Firmware Langsung dari Dashboard (USB)
+
+Sekarang kamu tidak wajib upload firmware lewat tombol Upload di Arduino IDE setiap kali. Selama Flask dijalankan di **laptop yang sama dengan ESP yang terhubung USB**, dashboard bisa mendeteksi port serial dan mengirim file firmware `.bin` ke ESP.
+
+Alurnya:
+
+```text
+ESP8266 ──USB──> Laptop
+                   │
+                   ├─ Flask + pyserial + esptool
+                   │
+                   └─ Dashboard → ESP → USB Firmware Center
+                                      │
+                                      ├─ pilih port otomatis
+                                      ├─ pilih file .bin
+                                      └─ Flash Firmware
+```
+
+**Cara pakai:**
+
+1. Jalankan aplikasi dengan `bash run.sh`.
+2. Colok ESP8266 menggunakan kabel USB data.
+3. Buka tab **🔌 ESP**.
+4. Tunggu bagian **USB Firmware Center** mendeteksi `/dev/ttyUSB*`, `/dev/ttyACM*`, atau `COM*`.
+5. Pilih file `.bin`, lalu klik **Auto Detect & Flash**. Port tidak perlu dipilih; esptool akan mencoba port serial yang terhubung secara otomatis. Jika ada beberapa serial device, port tertentu tetap bisa dipilih manual.
+   - Dari Arduino IDE, gunakan **Sketch → Export Compiled Binary** untuk menghasilkan file `.bin`.
+6. Progress/log flashing akan muncul langsung di dashboard.
+
+> Catatan: deteksi USB terjadi di mesin yang menjalankan Flask. Jadi kalau dashboard dibuka dari HP, HP tetap hanya menjadi remote control; port USB laptop yang muncul di dashboard adalah milik laptop server.
+
+> Untuk Linux, user harus punya akses ke serial device (umumnya group `dialout`) atau jalankan aplikasi dengan hak akses yang sesuai.
+
+---
 
 ### Step 1 — Install Arduino IDE
 
@@ -190,7 +224,7 @@ Setelah install driver, colok ESP ke USB. Cek di **Device Manager** → **Ports 
 ```
 === WiFi Monitor ESP8266 Sensor v2 ===
 ESP ID   : esp-sensor-01
-Server   : 192.168.100.66:9001
+Server   : 192.168.100.66:9002
 [WiFi] Connecting to: NamaWiFiKamu
 ....
 [WiFi] Connected! IP: 192.168.100.50 | RSSI: -45 dBm
@@ -202,6 +236,24 @@ Server   : 192.168.100.66:9001
 ---
 
 ## 🐧 Cara Flash ke ESP — Ubuntu / Debian
+
+### 🚀 Flash Firmware Directly from the Dashboard (USB)
+
+You no longer need to upload firmware from Arduino IDE every time. When Flask runs on the **same laptop where the ESP is connected by USB**, the dashboard can detect the serial port and flash an exported `.bin` firmware file.
+
+**How to use:**
+
+1. Run `bash run.sh`.
+2. Plug the ESP8266 into the laptop with a data USB cable.
+3. Open the **🔌 ESP** tab.
+4. Wait for **USB Firmware Center** to detect `/dev/ttyUSB*`, `/dev/ttyACM*`, or `COM*`.
+5. Select a `.bin` file and click **Auto Detect & Flash**. You do not need to choose a port; esptool will enumerate serial ports and try to find the ESP8266 automatically. A specific port can still be selected manually when needed.
+   - In Arduino IDE, use **Sketch → Export Compiled Binary** to produce the `.bin` file.
+6. Flashing logs appear in the dashboard.
+
+> USB detection happens on the machine running Flask. A phone browser can control the laptop server, but it cannot directly expose the phone's USB ports to the Flask server.
+
+---
 
 ### Step 1 — Install Arduino IDE
 
@@ -316,7 +368,7 @@ Setelah ESP nyala dan Flask server jalan (`bash run.sh`):
 
 **1. Cek ESP terdaftar:**
 ```bash
-curl http://localhost:9001/api/esp/status
+curl http://localhost:9002/api/esp/status
 ```
 
 Output:
@@ -336,7 +388,7 @@ Output:
 
 **2. Buka tab ESP di dashboard:**
 ```
-http://192.168.100.66:9001
+http://192.168.100.66:9002
 ```
 Klik tab **🔌 ESP** → ESP kamu muncul di sana.
 
@@ -384,7 +436,7 @@ sudo modprobe ch341
 - Cek firewall:
   ```bash
   # Ubuntu
-  sudo ufw allow 9001/tcp
+  sudo ufw allow 9002/tcp
 
   # Windows: buka Windows Defender Firewall
   # → Allow an app → tambahkan Python
@@ -500,7 +552,7 @@ Open `wifi_probe.ino` and change these values **before** flashing:
 const char* WIFI_SSID     = "YourWiFiName";
 const char* WIFI_PASSWORD = "YourWiFiPassword";
 const char* SERVER_IP     = "192.168.100.66";   // Flask server IP
-const int   SERVER_PORT   = 9001;
+const int   SERVER_PORT   = 9002;
 const char* ESP_ID        = "esp-sensor-01";
 ```
 
@@ -628,10 +680,10 @@ screen /dev/ttyUSB0 115200
 
 ```bash
 # Check ESP registered
-curl http://localhost:9001/api/esp/status
+curl http://localhost:9002/api/esp/status
 
 # Open dashboard
-# http://192.168.100.66:9001 → click tab 🔌 ESP
+# http://192.168.100.66:9002 → click tab 🔌 ESP
 ```
 
 Steps in dashboard:
@@ -654,5 +706,5 @@ Steps in dashboard:
 | ESP connects but not in dashboard | Check `SERVER_IP` matches Flask server IP |
 | Scan WiFi not working | ESP must send first report before scan works |
 | ESP keeps crashing | Use NodeMCU/Wemos D1 Mini, not ESP-01 |
-| Can't reach server | `sudo ufw allow 9001/tcp` (Ubuntu) |
+| Can't reach server | `sudo ufw allow 9002/tcp` (Ubuntu) |
   
